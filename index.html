@@ -1,0 +1,145 @@
+Texto para Iniciantes: Geração "Enzo"
+
+Antigamente, por volta de 2024, trabalhávamos com algumas operadoras T1 e precisávamos preencher uma planilha para liberar nossos prefixos e dos nossos clientes. Essa planilha precisava listar tanto os prefixos próprios quanto os dos downstreans. Sempre que um cliente passava a ser transito pra alguém ou qualquer outra mudança ocorria nas listas de prefixos, a planilha precisava ser preenchida e atualizada novamente.
+
+Para tornar esse processo mais eficiente, decidi usar a ajuda da IA para ajustar um script que já utilizava para gerar minhas listas.
+
+Para essa tarefa, utilizei uma máquina com Debian 12 com os seguintes packs:
+
+    bgpq4
+    sshpass
+    Mutt
+
+O objetivo do script é atualizar automaticamente a política de prefixos sempre que houver uma alteração IN/OUT nos AS-SETs contidos no Cone de ASNs. Na primeira execução do script, ele gera três arquivos:
+
+    arquivo-01 - raiz
+    arquivo-02 - atualização
+    arquivo-03 - diferença entre os arquivos-01 e 02
+
+Sempre que o script for executado, o arquivo-02 é "alimentado" e comparado ao arquivo-01. Se houver remoção ou inserção, essa diferença é adicionada ao arquivo-03, que por sua vez é commitado no roteador. Após esse commit, o script enviará um email dizendo: "Ô folgado, se liga aí que o cliente atualizou o cone dele ;)". Isso é útil em caso de ainda existir algum transito que a liberação não seja via IRR aí vc não fica cego sem saber quem alterou seus respectivos as-sets, este exemplo é para juniper mas pode escrever para qualquer outro vendor!
+
+##--atualiza-cone.sh--##
+
+#!/bin/bash
+
+# Arquivo de saída
+output_file="arquivo-02"
+
+# Limpa o arquivo de saída se já existir
+> "$output_file"
+
+# Adiciona "configure;" no início do arquivo
+echo "configure;" >> "$output_file"
+
+# Função para processar AS-SETs para IPv4
+process_as_set_ipv4() {
+    local as_set=$1
+    local policy_statement=$2
+    bgpq4 -AJEl eltel -R 8 -R 24 "$as_set" | \
+    awk -v ps="$policy_statement" '{print "set policy-options policy-statement " ps " term 1 from",$1,$2,$3,$4}' | \
+    grep route-filter | \
+    sed 's/;//g' | \
+    sed 's/$/;/' >> "$output_file"
+    # Adiciona uma linha em branco
+    echo "" >> "$output_file"
+}
+
+# Função para processar AS-SETs para IPv6
+process_as_set_ipv6() {
+    local as_set=$1
+    local policy_statement=$2
+    bgpq4 -6AJEl eltel -R 8 -R 24 "$as_set" | \
+    awk -v ps="$policy_statement" '{print "set policy-options policy-statement " ps " term 2 from",$1,$2,$3,$4}' | \
+    grep route-filter | \
+    sed 's/;//g' | \
+    sed 's/$/;/' >> "$output_file"
+    # Adiciona uma linha em branco
+    echo "" >> "$output_file"
+}
+
+# Processamento de AS-SETs para IPv4
+process_as_set_ipv4 "AS-NIC-BR" "Policy-teste-v4"
+
+process_as_set_ipv6 "AS-NIC-BR" "Policy-teste-v6"
+# Adiciona "commit;" no final do arquivo
+echo "commit;" >> "$output_file"
+
+##--atualiza-arquivo.sh--##
+
+#!/bin/bash
+
+# Arquivos
+ARQUIVO_01="arquivo-01"
+ARQUIVO_02="arquivo-02"
+ARQUIVO_03="arquivo-03"
+
+# Limpar o arquivo temporário
+> "$ARQUIVO_03"
+
+# Ordenar os arquivos antes de usar comm
+sort "$ARQUIVO_01" > "${ARQUIVO_01}.sorted"
+sort "$ARQUIVO_02" > "${ARQUIVO_02}.sorted"
+
+# Arquivo temporário para alterações positivas e negativas
+POSITIVE_CHANGES="${ARQUIVO_03}.positive"
+NEGATIVE_CHANGES="${ARQUIVO_03}.negative"
+
+# Limpar arquivos temporários
+> "$POSITIVE_CHANGES"
+> "$NEGATIVE_CHANGES"
+
+# Encontrar alterações negativas (em ARQUIVO_01 mas não em ARQUIVO_02)
+comm -23 "${ARQUIVO_01}.sorted" "${ARQUIVO_02}.sorted" | sed 's/^/delete /' > "$NEGATIVE_CHANGES"
+
+# Encontrar alterações positivas (em ARQUIVO_02 mas não em ARQUIVO_01)
+comm -13 "${ARQUIVO_01}.sorted" "${ARQUIVO_02}.sorted" | sed 's/^/set /' > "$POSITIVE_CHANGES"
+
+# Remover qualquer "set" adicional das linhas no POSITIVE_CHANGES
+sed -i 's/^set set /set /' "$POSITIVE_CHANGES"
+# Remover qualquer "delete" adicional das linhas no NEGATIVE_CHANGES
+sed -i 's/^delete delete /delete /' "$NEGATIVE_CHANGES"
+
+# Combinar alterações positivas e negativas
+cat "$NEGATIVE_CHANGES" "$POSITIVE_CHANGES" > "$ARQUIVO_03"
+
+# Verificar se há alterações no arquivo-03 antes de adicionar "configure" e "commit"
+if [ -s "$ARQUIVO_03" ] && [ "$(grep -vE '^(configure;|commit;)$' "$ARQUIVO_03" | wc -l)" -gt 0 ]; then
+    # Adicionar "configure;" no início e "commit;" no final do arquivo-03
+    { echo "configure;"; cat "$ARQUIVO_03"; echo "commit;"; } > "${ARQUIVO_03}.updated"
+
+    # Substituir o arquivo-03 original pelo atualizado
+    mv "${ARQUIVO_03}.updated" "$ARQUIVO_03"
+
+    # Configurar detalhes do email
+    EMAIL_SUBJECT="Diferenças entre arquivo-02 e arquivo-01"
+    EMAIL_BODY="As diferenças encontradas entre os arquivos foram:"
+    EMAIL_TO="enzo@hilux-net.com.br"  # Substitua pelo destinatário real
+
+    # Enviar o email com o conteúdo do arquivo-03 usando mutt
+    { echo "$EMAIL_BODY"; cat "$ARQUIVO_03"; } | mutt -s "$EMAIL_SUBJECT" "$EMAIL_TO"
+else
+    # Adicionar "exit;" no arquivo-03 se não houver alterações
+    echo "exit;" > "$ARQUIVO_03"
+fi
+
+# Replicar o conteúdo do arquivo-02 para o arquivo-01
+cp "$ARQUIVO_02" "$ARQUIVO_01"
+
+# Limpar arquivos temporários
+rm "${ARQUIVO_01}.sorted" "${ARQUIVO_02}.sorted" "$POSITIVE_CHANGES" "$NEGATIVE_CHANGES"
+
+##--Atualiza-router.sh--#
+#!/bin/bash -x
+# Variáveis
+HOST="10.10.0.74" USER="enzo" PASSWORD="babyshark"
+#FILE="arquivo-01"
+#FILE2="arquivo-02"
+FILE3="arquivo-03"
+# Sequência de comandos a ser executada
+#incluir=$(cat "$FILE")
+#incluir=$(cat "$FILE2")
+incluir2=$(cat "$FILE3")
+# Executar comandos usando sshpass e ssh
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no "$USER@$HOST" "$incluir2"
+
+pronto, agenda isso num cronzinho e já era!
