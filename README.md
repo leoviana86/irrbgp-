@@ -17,3 +17,9 @@ O objetivo do script é atualizar automaticamente a política de prefixos sempre
     arquivo-03 - diferença entre os arquivos-01 e 02
 
 Sempre que o script for executado, o arquivo-02 é "alimentado" e comparado ao arquivo-01. Se houver remoção ou inserção, essa diferença é adicionada ao arquivo-03, que por sua vez é commitado no roteador. Após esse commit, o script enviará um email dizendo: "Ô folgado, se liga aí que o cliente atualizou o cone dele ;)". Isso é útil em caso de ainda existir algum transito que a liberação não seja via IRR aí vc não fica cego sem saber quem alterou seus respectivos as-sets, este exemplo é para juniper mas pode escrever para qualquer outro vendor!
+
+pronto, agenda isso num cronzinho e já era!
+
+
+Autor: leoviana86  ( https://github.com/leoviana86 )
+Site: https://github.com/leoviana86/irrbgp-
